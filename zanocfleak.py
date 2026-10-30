@@ -388,7 +388,7 @@ class ZanoCFLeak:
         )
         tqdm.write(f'{Colors.YELLOW}"Unmasking hidden infrastructure behind the edge"')
         tqdm.write(
-            f"{Colors.WHITE}GitHub: {Colors.BLUE}https://github.com/zaxzax98/Zano-CFLeakt\n"
+            f"{Colors.WHITE}GitHub: {Colors.BLUE}https://github.com/zaxzax98/Zano-CFLeak\n"
         )
 
     def load_wordlists(self) -> list[str]:
@@ -413,8 +413,8 @@ class ZanoCFLeak:
 
         return sorted(subdomains)
 
-    def _resolve_record(self, domain: str, record_type: str) -> list[str]:
-        """Resolve a DNS record type and return all IPs."""
+    def _resolve_record(self, domain: str, record_type: str) -> tuple[list[str], Optional[str]]:
+        """Resolve a DNS record type and return all IPs plus any error."""
         ips = []
         try:
             answers = dns.resolver.resolve(domain, record_type)
@@ -428,9 +428,9 @@ class ZanoCFLeak:
             dns.resolver.LifetimeTimeout,
         ):
             pass
-        except Exception:
-            pass
-        return ips
+        except Exception as e:
+            return ips, str(e)
+        return ips, None
 
     def resolve_domain(self, subdomain: Optional[str] = None) -> ResolveResult:
         """Resolve a domain or subdomain for both A and AAAA records."""
@@ -439,21 +439,26 @@ class ZanoCFLeak:
         result = ResolveResult(domain=full_domain)
 
         # Resolve IPv4 (A records) - get ALL IPs
-        ipv4_list = self._resolve_record(full_domain, "A")
+        ipv4_list, v4_error = self._resolve_record(full_domain, "A")
         result.ipv4 = ipv4_list
         result.ipv4_cloudflare = [
             ip for ip in ipv4_list if self.cf_ranges.is_cloudflare_ip(ip)
         ]
 
         # Resolve IPv6 (AAAA records) - get ALL IPs
-        ipv6_list = self._resolve_record(full_domain, "AAAA")
+        ipv6_list, v6_error = self._resolve_record(full_domain, "AAAA")
         result.ipv6 = ipv6_list
         result.ipv6_cloudflare = [
             ip for ip in ipv6_list if self.cf_ranges.is_cloudflare_ip(ip)
         ]
 
+        # Record any unexpected resolver error
+        result.error = v4_error or v6_error
+
         # Determine status
-        if not result.ipv4 and not result.ipv6:
+        if not result.ipv4 and not result.ipv6 and result.error:
+            result.status = "error"
+        elif not result.ipv4 and not result.ipv6:
             result.status = "not_found"
         elif result.has_non_cf_ip:
             result.status = "found"
@@ -507,7 +512,7 @@ class ZanoCFLeak:
         elif result.status == "not_found":
             self.report.not_found.append(result)
             self.log(f"{Colors.RED}[NOT FOUND] {result.domain}", "verbose")
-        elif result.error:
+        elif result.status == "error":
             self.report.errors.append(result)
             self.log(f"{Colors.YELLOW}[ERROR] {result.domain}: {result.error}", "verbose")
 
@@ -621,8 +626,8 @@ def parse_arguments() -> argparse.Namespace:
 Examples:
   python3 zanocfleak.py example.com
   python3 zanocfleak.py example.com -w subs.txt -t 20 -o report.json -f json
-  python3 zanocfleak.py  example.com -w list1.txt -w list2.txt -v
-  python3 zanocfleak.py  example.com -q -o found.txt
+  python3 zanocfleak.py example.com -w list1.txt -w list2.txt -v
+  python3 zanocfleak.py example.com -q -o found.txt
         """,
     )
 
@@ -679,7 +684,7 @@ Examples:
 def main():
     args = parse_arguments()
 
-    scanner =ZanoCFLeak(
+    scanner = ZanoCFLeak(
         domain=args.domain,
         wordlists=args.wordlists,
         threads=args.threads,
